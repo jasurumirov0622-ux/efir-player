@@ -6,6 +6,7 @@
 <title>EFIR BOT</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #e8eef2;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -14,6 +15,7 @@
   #msg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     text-align: center; padding: 24px; line-height: 1.5; background: #0b1218; }
   #msg.show { display: flex; }
+  #det { margin-top: 8px; font-size: 12px; opacity: .6; word-break: break-all; }
   #msg button { margin-top: 14px; padding: 10px 20px; border: 0; border-radius: 10px;
     background: #2a7de1; color: #fff; font-size: 16px; }
 </style>
@@ -21,10 +23,13 @@
 <body>
 <div id="wrap">
   <video id="v" controls autoplay playsinline webkit-playsinline></video>
-  <div id="msg"><div><div id="txt"></div><div id="det" style="margin-top:8px;font-size:12px;opacity:.6;word-break:break-all"></div><button id="retry">Qayta urinish</button></div></div>
+  <div id="msg"><div><div id="txt"></div><div id="det"></div><button id="retry">Qayta urinish</button></div></div>
 </div>
 <script>
 (function () {
+  // Cloudflare Worker manzili (oxirida "/" siz), masalan: https://efir-proxy.nomingiz.workers.dev
+  var PROXY = 'https://bold-band-499d.jasurumirov0622.workers.dev';
+
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 
@@ -33,36 +38,71 @@
   var txt = document.getElementById('txt');
   var det = document.getElementById('det');
   var src = new URLSearchParams(location.search).get('src');
-  var hls = null;
+  var hls = null, ts = null, retries = 0;
 
   function fail(t, d) { txt.textContent = t; det.textContent = d || ''; msg.classList.add('show'); }
+  function short() { return (src || '').slice(0, 60); }
+  function play() { video.play().catch(function () {}); }
 
-  function start() {
-    msg.classList.remove('show');
+  function cleanup() {
     if (hls) { hls.destroy(); hls = null; }
-    if (!src) return fail('Kanal manzili topilmadi.');
-    if (location.protocol === 'https:' && src.indexOf('http://') === 0)
-      return fail("Bu kanal http:// manzilda, HTTPS sahifada ochilmaydi.", src.slice(0, 60));
+    if (ts) { try { ts.destroy(); } catch (e) {} ts = null; }
+  }
 
-    var isHls = /\.m3u8(\?|$)/i.test(src) || src.indexOf('.m3u8') > -1;
-    if (isHls && window.Hls && Hls.isSupported()) {
-      hls = new Hls({ lowLatencyMode: true });
-      hls.loadSource(src);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function () {}); });
-      hls.on(Hls.Events.ERROR, function (_, d) {
-        if (!d.fatal) return;
-        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else fail("Kanalni ochib bo'lmadi.", d.type + ' / ' + d.details + ' | ' + src.slice(0, 60));
+  function tryTs(url) {
+    if (window.mpegts && mpegts.getFeatureList().mseLivePlayback) {
+      cleanup();
+      ts = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: url });
+      ts.attachMediaElement(video);
+      ts.on(mpegts.Events.ERROR, function (type, detail) {
+        fail("Kanalni ochib bo'lmadi.", type + ' / ' + detail + ' | ' + short());
       });
+      ts.load();
+      play();
     } else {
-      video.src = src;
-      video.play().catch(function () {});
+      video.src = url;
+      play();
     }
   }
 
-  video.addEventListener('error', function () { fail("Kanalni ochib bo'lmadi.", 'video xato kodi: ' + (video.error ? video.error.code : '?') + ' | ' + (src || '').slice(0, 60)); });
+  function tryHls(url) {
+    if (window.Hls && Hls.isSupported()) {
+      hls = new Hls({ lowLatencyMode: true });
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, play);
+      hls.on(Hls.Events.ERROR, function (_, d) {
+        if (!d.fatal) return;
+        if (d.details === 'manifestParsingError') return tryTs(url);   // HLS emas — oddiy TS oqim
+        if (d.type === Hls.ErrorTypes.NETWORK_ERROR && retries++ < 3) return hls.startLoad();
+        if (d.type === Hls.ErrorTypes.MEDIA_ERROR && retries++ < 3) return hls.recoverMediaError();
+        fail("Kanalni ochib bo'lmadi.", d.type + ' / ' + d.details + ' | ' + short());
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = url;
+      play();
+    } else {
+      tryTs(url);
+    }
+  }
+
+  function start() {
+    msg.classList.remove('show');
+    cleanup();
+    retries = 0;
+    if (!src) return fail('Kanal manzili topilmadi.');
+    var url = src;
+    if (/^http:\/\//i.test(src)) {
+      if (!PROXY) return fail("Bu kanal http:// manzilda, HTTPS sahifada ochilmaydi.", short());
+      url = PROXY.replace(/\/$/, '') + '/?u=' + encodeURIComponent(src);
+    }
+    tryHls(url);
+  }
+
+  video.addEventListener('error', function () {
+    if (ts) return;
+    fail("Kanalni ochib bo'lmadi.", 'video xato kodi: ' + (video.error ? video.error.code : '?') + ' | ' + short());
+  });
   document.getElementById('retry').addEventListener('click', start);
   start();
 })();
