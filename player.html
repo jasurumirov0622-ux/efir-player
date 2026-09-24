@@ -1,59 +1,71 @@
 <!DOCTYPE html>
 <html lang="uz">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Jonli efir</title>
+<title>EFIR BOT</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
 <style>
-  :root { color-scheme: dark; }
-  html, body {
-    margin: 0; padding: 0; height: 100%; background: #000;
-    display: flex; align-items: center; justify-content: center;
-    font-family: -apple-system, sans-serif;
-  }
-  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-  #msg {
-    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    color: #ccc; text-align: center; padding: 16px; font-size: 15px;
-  }
+  html, body { margin: 0; height: 100%; background: #000; color: #e8eef2;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #wrap { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  video { width: 100%; max-height: 100%; background: #000; }
+  #msg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    text-align: center; padding: 24px; line-height: 1.5; background: #0b1218; }
+  #msg.show { display: flex; }
+  #msg button { margin-top: 14px; padding: 10px 20px; border: 0; border-radius: 10px;
+    background: #2a7de1; color: #fff; font-size: 16px; }
 </style>
 </head>
 <body>
-  <video id="v" controls autoplay playsinline></video>
-  <div id="msg"></div>
-
+<div id="wrap">
+  <video id="v" controls autoplay playsinline webkit-playsinline></video>
+  <div id="msg"><div><div id="txt"></div><div id="det" style="margin-top:8px;font-size:12px;opacity:.6;word-break:break-all"></div><button id="retry">Qayta urinish</button></div></div>
+</div>
 <script>
-  try { window.Telegram.WebApp.ready(); window.Telegram.WebApp.expand(); } catch (e) {}
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 
-  const params = new URLSearchParams(window.location.search);
-  const src = params.get("src");
-  const video = document.getElementById("v");
-  const msg = document.getElementById("msg");
+  var video = document.getElementById('v');
+  var msg = document.getElementById('msg');
+  var txt = document.getElementById('txt');
+  var det = document.getElementById('det');
+  var src = new URLSearchParams(location.search).get('src');
+  var hls = null;
 
-  function showError(text) {
-    video.style.display = "none";
-    msg.textContent = text;
+  function fail(t, d) { txt.textContent = t; det.textContent = d || ''; msg.classList.add('show'); }
+
+  function start() {
+    msg.classList.remove('show');
+    if (hls) { hls.destroy(); hls = null; }
+    if (!src) return fail('Kanal manzili topilmadi.');
+    if (location.protocol === 'https:' && src.indexOf('http://') === 0)
+      return fail("Bu kanal http:// manzilda, HTTPS sahifada ochilmaydi.", src.slice(0, 60));
+
+    var isHls = /\.m3u8(\?|$)/i.test(src) || src.indexOf('.m3u8') > -1;
+    if (isHls && window.Hls && Hls.isSupported()) {
+      hls = new Hls({ lowLatencyMode: true });
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function () {}); });
+      hls.on(Hls.Events.ERROR, function (_, d) {
+        if (!d.fatal) return;
+        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+        else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        else fail("Kanalni ochib bo'lmadi.", d.type + ' / ' + d.details + ' | ' + src.slice(0, 60));
+      });
+    } else {
+      video.src = src;
+      video.play().catch(function () {});
+    }
   }
 
-  if (!src) {
-    showError("Kanal manzili topilmadi.");
-  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-    // Safari/iOS - HLS'ni tabiiy qo'llab-quvvatlaydi
-    video.src = src;
-  } else if (window.Hls && Hls.isSupported()) {
-    const hls = new Hls();
-    hls.loadSource(src);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.ERROR, function (event, data) {
-      if (data.fatal) {
-        showError("Oqimni yuklab bo'lmadi. Manba mavjud emas yoki CORS bloklangan.");
-      }
-    });
-  } else {
-    showError("Bu qurilma/brauzer jonli oqimni qo'llab-quvvatlamaydi.");
-  }
+  video.addEventListener('error', function () { fail("Kanalni ochib bo'lmadi.", 'video xato kodi: ' + (video.error ? video.error.code : '?') + ' | ' + (src || '').slice(0, 60)); });
+  document.getElementById('retry').addEventListener('click', start);
+  start();
+})();
 </script>
 </body>
 </html>
